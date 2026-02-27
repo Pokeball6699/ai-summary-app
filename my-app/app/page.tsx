@@ -64,6 +64,11 @@ export default function Home() {
   const loadFiles = async () => {
     setLoadingFiles(true);
     try {
+      if (!supabase) {
+        setUploadStatus('Supabase not configured. Please add environment variables.');
+        setFiles([]);
+        return;
+      }
       const { data, error } = await supabase.storage.from('test').list();
 
       if (error) throw error;
@@ -100,6 +105,11 @@ export default function Home() {
       return;
     }
 
+    if (!supabase) {
+      setUploadStatus('Supabase not configured. Please add environment variables.');
+      return;
+    }
+
     setUploadStatus('Uploading...');
 
     try {
@@ -128,6 +138,11 @@ export default function Home() {
   const handleDelete = async (fileName: string) => {
     if (!confirm(`Are you sure you want to delete ${fileName}?`)) return;
 
+    if (!supabase) {
+      alert('Supabase not configured. Please add environment variables.');
+      return;
+    }
+
     try {
       const { error } = await supabase.storage.from('test').remove([fileName]);
 
@@ -153,7 +168,7 @@ export default function Home() {
 
   // Download & extract document content when needed
   const loadDocument = async () => {
-    if (!selectedDoc) return;
+    if (!selectedDoc || !supabase) return;
     try {
       const { data: fileBlob, error } = await supabase.storage
         .from('test')
@@ -229,6 +244,7 @@ export default function Home() {
 
       if (!fileText) {
         // Download and extract as fallback
+        if (!supabase) throw new Error('Supabase not configured');
         const { data: fileBlob, error: dlError } = await supabase.storage
           .from('test')
           .download(selectedDoc.name);

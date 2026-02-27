@@ -1,16 +1,15 @@
 // lib/supabase.ts
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 
-if (!supabaseUrl) {
-  console.error('error:NEXT_PUBLIC_SUPABASE_URL not setup');
-  throw new Error('supabaseUrl is required');
+let supabase: any = null;
+
+if (supabaseUrl && supabaseAnonKey) {
+  supabase = createClient(supabaseUrl, supabaseAnonKey);
+} else {
+  console.warn('Supabase environment variables not configured. Storage features will be disabled.');
 }
 
-if (!supabaseAnonKey) {
-  console.error('error:NEXT_PUBLIC_SUPABASE_ANON_KEY not setup');
-}
-
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export { supabase };
