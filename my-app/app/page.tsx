@@ -6,12 +6,29 @@ import { PDFParse } from 'pdf-parse';
 import mammoth from 'mammoth';
 import * as XLSX from 'xlsx';
 
-// configure pdfjs worker to avoid "No GlobalWorkerOptions.workerSrc" error
-import { GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf';
-import pdfjsPackage from 'pdfjs-dist/package.json';
-GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsPackage.version}/pdf.worker.min.js`;
 
 export default function Home() {
+  // set pdfjs worker dynamically on client to avoid build-time import errors
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    (async () => {
+      try {
+        const pdfjs = await import('pdfjs-dist/legacy/build/pdf');
+        try {
+          const pkgModule: any = await import('pdfjs-dist/package.json');
+          const version = pkgModule?.default?.version || pkgModule?.version || '3.9.179';
+          pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${version}/pdf.worker.min.js`;
+        } catch {
+          // fallback: use a generic CDN url (adjust if you want a specific version)
+          pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.9.179/pdf.worker.min.js';
+        }
+      } catch (e) {
+        // ignore: pdfjs not available in this environment
+        console.warn('pdfjs-dist dynamic import failed:', e);
+      }
+    })();
+  }, []);
+
   // ── Backend health check state ────────────────────────────────
   const [status, setStatus] = useState("Frontend running");
 

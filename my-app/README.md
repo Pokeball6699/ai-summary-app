@@ -41,7 +41,7 @@ This project can persist uploaded document metadata and generated AI summaries i
 
 1. In your Supabase project, create the tables. You can run the SQL migration found at `db/migrations/001_create_documents_summaries.sql` in the SQL editor.
 
-2. Add the following environment variables to your deployment (or to `.env.local` when developing locally):
+2. **Before you build or deploy**, make sure the following environment variables are configured. They are required at build‑time as well as runtime. On Vercel (or whichever host you use) add them under *Project Settings → Environment Variables*. For local development, copy `.env.example` to `.env.local` and fill in the values.
 
 ```
 SUPABASE_URL=https://your-project.supabase.co
