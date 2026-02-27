@@ -6,6 +6,11 @@ import { PDFParse } from 'pdf-parse';
 import mammoth from 'mammoth';
 import * as XLSX from 'xlsx';
 
+// configure pdfjs worker to avoid "No GlobalWorkerOptions.workerSrc" error
+import { GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf';
+import pdfjsPackage from 'pdfjs-dist/package.json';
+GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsPackage.version}/pdf.worker.min.js`;
+
 export default function Home() {
   // ── Backend health check state ────────────────────────────────
   const [status, setStatus] = useState("Frontend running");
@@ -26,6 +31,10 @@ export default function Home() {
   const [summary, setSummary] = useState<string>('');
   const [generatingSummary, setGeneratingSummary] = useState(false);
   const [summaryModelInfo, setSummaryModelInfo] = useState('');
+
+  // ── Document content state ──────────────────────────────────
+  const [extractedText, setExtractedText] = useState<string>('');
+  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
 
   // ── Settings modal state ──────────────────────────────────────
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -121,7 +130,70 @@ export default function Home() {
     setActiveTab('summary');
     setSummary('');
     setSummaryModelInfo('');
+    setExtractedText('');
+    setPdfBlob(null);
   };
+
+  // Download & extract document content when needed
+  const loadDocument = async () => {
+    if (!selectedDoc) return;
+    try {
+      const { data: fileBlob, error } = await supabase.storage
+        .from('test')
+        .download(selectedDoc.name);
+      if (error || !fileBlob) {
+        console.error('Error downloading file:', error);
+        return;
+      }
+
+      const nameLower = selectedDoc.name.toLowerCase();
+      let text = '';
+
+      if (nameLower.endsWith('.pdf')) {
+        setPdfBlob(fileBlob);
+        const arrayBuffer = await fileBlob.arrayBuffer();
+        const pdf = new PDFParse({ data: arrayBuffer });
+        const pdfData = await pdf.getText();
+        text = pdfData.text;
+      } else if (nameLower.endsWith('.docx') || nameLower.endsWith('.doc')) {
+        if (nameLower.endsWith('.doc')) {
+          // mammoth does not support the old binary .doc format.
+          throw new Error('Unsupported file format: .doc files are not supported. Please convert to .docx.');
+        }
+        const arrayBuffer = await fileBlob.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        text = result.value;
+      } else if (nameLower.endsWith('.xlsx') || nameLower.endsWith('.xls')) {
+        const arrayBuffer = await fileBlob.arrayBuffer();
+        const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+        let combined = '';
+        workbook.SheetNames.forEach(sheetName => {
+          const sheet = workbook.Sheets[sheetName];
+          combined += XLSX.utils.sheet_to_txt(sheet) + '\n\n';
+        });
+        text = combined;
+      } else if (nameLower.endsWith('.txt') || nameLower.endsWith('.md')) {
+        text = await fileBlob.text();
+      }
+
+      setExtractedText(text);
+    } catch (err) {
+      console.error('Failed to load document:', err);
+    }
+  };
+
+  // automatically load when selectedDoc changes
+  useEffect(() => {
+    loadDocument();
+  }, [selectedDoc]);
+
+  // also reload when user switches to pdf or text tab and data isn't ready
+  useEffect(() => {
+    if (!selectedDoc) return;
+    if ((activeTab === 'pdf' && !pdfBlob) || (activeTab === 'text' && !extractedText)) {
+      loadDocument();
+    }
+  }, [activeTab, selectedDoc, pdfBlob, extractedText]);
 
   // Generate AI summary using GitHub Models via llm CLI (backend API route)
   const handleGenerateSummary = async () => {
@@ -135,39 +207,46 @@ export default function Home() {
     setSummaryModelInfo('');
 
     try {
-      // Download file content from Supabase
-      const { data: fileBlob, error: dlError } = await supabase.storage
-        .from('test')
-        .download(selectedDoc.name);
+      // if we already have text from earlier load, use it
+      let fileText = extractedText;
 
-      if (dlError) throw dlError;
+      if (!fileText) {
+        // Download and extract as fallback
+        const { data: fileBlob, error: dlError } = await supabase.storage
+          .from('test')
+          .download(selectedDoc.name);
+        if (dlError) throw dlError;
 
-      const fileNameLower = selectedDoc.name.toLowerCase();
-      let fileText = '';
+        const fileNameLower = selectedDoc.name.toLowerCase();
 
-      // Extract text based on file type
-      if (fileNameLower.endsWith('.pdf')) {
-        const arrayBuffer = await fileBlob.arrayBuffer();
-        const pdf = new PDFParse({ data: arrayBuffer });
-        const pdfData = await pdf.getText();
-        fileText = pdfData.text;
-      } else if (fileNameLower.endsWith('.docx') || fileNameLower.endsWith('.doc')) {
-        const arrayBuffer = await fileBlob.arrayBuffer();
-        const result = await mammoth.extractRawText({ arrayBuffer });
-        fileText = result.value;
-      } else if (fileNameLower.endsWith('.xlsx') || fileNameLower.endsWith('.xls')) {
-        const arrayBuffer = await fileBlob.arrayBuffer();
-        const workbook = XLSX.read(arrayBuffer, { type: 'array' });
-        let text = '';
-        workbook.SheetNames.forEach(sheetName => {
-          const sheet = workbook.Sheets[sheetName];
-          text += XLSX.utils.sheet_to_txt(sheet) + '\n\n';
-        });
-        fileText = text;
-      } else if (fileNameLower.endsWith('.txt') || fileNameLower.endsWith('.md')) {
-        fileText = await fileBlob.text();
-      } else {
-        throw new Error('Unsupported file format. Currently only .pdf, .docx, .xlsx, .txt, .md are supported.');
+        if (fileNameLower.endsWith('.pdf')) {
+          const arrayBuffer = await fileBlob.arrayBuffer();
+          const pdf = new PDFParse({ data: arrayBuffer });
+          const pdfData = await pdf.getText();
+          fileText = pdfData.text;
+          setPdfBlob(fileBlob);
+        } else if (fileNameLower.endsWith('.docx') || fileNameLower.endsWith('.doc')) {
+          if (fileNameLower.endsWith('.doc')) {
+            throw new Error('Unsupported file format: .doc files are not supported by the parser. Please convert to .docx and retry.');
+          }
+          const arrayBuffer = await fileBlob.arrayBuffer();
+          const result = await mammoth.extractRawText({ arrayBuffer });
+          fileText = result.value;
+        } else if (fileNameLower.endsWith('.xlsx') || fileNameLower.endsWith('.xls')) {          const arrayBuffer = await fileBlob.arrayBuffer();
+          const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+          let text = '';
+          workbook.SheetNames.forEach(sheetName => {
+            const sheet = workbook.Sheets[sheetName];
+            text += XLSX.utils.sheet_to_txt(sheet) + '\n\n';
+          });
+          fileText = text;
+        } else if (fileNameLower.endsWith('.txt') || fileNameLower.endsWith('.md')) {
+          fileText = await fileBlob.text();
+        } else {
+          throw new Error('Unsupported file format. Currently only .pdf, .docx, .xlsx, .txt, .md are supported.');
+        }
+
+        setExtractedText(fileText);
       }
 
       // Limit text length to avoid token limits
@@ -179,6 +258,7 @@ export default function Home() {
         body: JSON.stringify({
           fileText: limitedText,
           customPrompt: customPrompt.trim() || defaultPrompt,
+          fileName: selectedDoc?.name || null,
         }),
       });
 
@@ -361,14 +441,66 @@ export default function Home() {
 
                 {/* Tab content */}
                 {activeTab === 'pdf' && (
-                  <div className="h-96 bg-gray-100 rounded flex items-center justify-center">
-                    <p className="text-gray-500">PDF Viewer (add pdf.js integration later)</p>
+                  <div className="bg-gray-100 rounded flex flex-col h-full">
+                    {pdfBlob ? (
+                      <>
+                        <div className="flex-1 flex items-center justify-center min-h-96 overflow-auto bg-gray-900">
+                          <embed
+                            src={URL.createObjectURL(pdfBlob)}
+                            type="application/pdf"
+                            width="100%"
+                            height="600"
+                            className="max-w-4xl"
+                          />
+                        </div>
+                        <div className="p-4 bg-blue-50 border-t border-blue-200 text-sm text-blue-700">
+                          📄 PDF: {selectedDoc?.name} | 大小: {Math.round((selectedDoc?.metadata?.size || 0) / 1024)} KB
+                        </div>
+                      </>
+                    ) : selectedDoc && selectedDoc.name.toLowerCase().endsWith('.pdf') ? (
+                      <div className="h-96 flex flex-col items-center justify-center text-gray-600">
+                        <div className="text-5xl mb-3">📄</div>
+                        <p className="text-lg font-semibold mb-2">加載中...</p>
+                        <p className="text-sm">正在載入 PDF 文件</p>
+                      </div>
+                    ) : (
+                      <div className="h-96 flex flex-col items-center justify-center text-gray-600">
+                        <div className="text-5xl mb-3">📄</div>
+                        <p className="text-lg font-semibold mb-2">請選擇 PDF 文件</p>
+                        <p className="text-sm text-gray-500">選擇列表中的 PDF 檔案以查看其內容</p>
+                      </div>
+                    )}
                   </div>
                 )}
 
                 {activeTab === 'text' && (
-                  <div className="h-96 overflow-auto p-4 bg-gray-50 rounded">
-                    <p className="text-gray-700">Extracted text will appear here (add PDF parsing later)</p>
+                  <div className="bg-gray-50 rounded flex flex-col">
+                    {extractedText ? (
+                      <>
+                        <div className="flex-1 h-96 overflow-auto p-4 bg-white">
+                          <div className="whitespace-pre-wrap text-gray-700 font-mono text-sm leading-relaxed">
+                            {extractedText}
+                          </div>
+                        </div>
+                        <div className="p-3 bg-green-50 border-t border-green-200 text-sm text-green-700 flex justify-between items-center">
+                          <span>✅ 已提取 {extractedText.length} 個字符</span>
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText(extractedText);
+                              alert('文本已複製到剪貼板');
+                            }}
+                            className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-xs"
+                          >
+                            📋 複製
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="h-96 flex flex-col items-center justify-center text-gray-500">
+                        <p className="text-lg mb-2">📝 文本不可用</p>
+                        <p className="text-sm">請先生成摘要以查看提取的文本</p>
+                      </div>
+                    )}
                   </div>
                 )}
 
